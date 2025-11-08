@@ -2,22 +2,6 @@
 import streamlit as st
 import pandas as pd
 import os
-# DEBUG: confirm secrets & Google client availability (remove after testing)
-import json, streamlit as st
-st.write("Has OCR.key:", "OCRSPACE_API_KEY" in st.secrets)
-st.write("Has GCP JSON:", "GCP_SERVICE_ACCOUNT_JSON" in st.secrets)
-st.write("Google client lib available:", )
-try:
-    import google.cloud.vision
-    st.write(True)
-except Exception:
-    st.write(False)
-if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
-    try:
-        creds = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
-        st.write("GCP project:", creds.get("project_id"))
-    except Exception as e:
-        st.write("GCP JSON parse error:", str(e))
 
 from extract import extract_data
 
