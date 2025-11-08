@@ -1,7 +1,6 @@
 streamlit
-pytesseract
-pillow
 opencv-python-headless
 pandas
-PyMuPDF
 requests
+pillow
+numpy
