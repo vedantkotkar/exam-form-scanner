@@ -1,67 +1,56 @@
-# extract.py
-import pytesseract, re
-from PIL import Image, UnidentifiedImageError
-import cv2, os
-import fitz  # PyMuPDF
+# add at top
+import requests
+import streamlit as st
 
-def pdf_to_images(pdf_path):
-    """Convert each page of pdf to a JPG file, return list of image paths."""
-    images = []
-    doc = fitz.open(pdf_path)
-    for i, page in enumerate(doc):
-        pix = page.get_pixmap(dpi=200)  # reasonable DPI
-        out = f"{pdf_path}.page{i}.jpg"
-        pix.save(out)
-        images.append(out)
-    doc.close()
-    return images
+# new helper: call OCR.space
+def ocr_space_file(image_path, api_key):
+    """Send image file to OCR.space and return extracted text or error."""
+    url_api = "https://api.ocr.space/parse/image"
+    with open(image_path, "rb") as f:
+        payload = {
+            'isOverlayRequired': False,
+            'apikey': api_key,
+            'language': 'eng'
+        }
+        files = {
+            'file': f
+        }
+        try:
+            r = requests.post(url_api, files=files, data=payload, timeout=60)
+            result = r.json()
+            if result.get("IsErroredOnProcessing"):
+                return "", "ocr.space error: " + result.get("ErrorMessage", ["Unknown"])[0]
+            parsed = result.get("ParsedResults")[0]
+            return parsed.get("ParsedText", ""), None
+        except Exception as e:
+            return "", f"ocr.space request failed: {e}"
 
-def preprocess_image(file_path):
-    img = cv2.imread(file_path)
-    if img is None:
-        # If cv2 can't read, return original path (PIL might still work)
-        return file_path
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    temp_path = file_path + ".proc.jpg"
-    cv2.imwrite(temp_path, thresh)
-    return temp_path
-
-def safe_search(pattern, text, flags=0):
-    m = re.search(pattern, text, flags)
-    return m.group(1).strip() if m else ""
-
-def normalize_name(full_name):
-    parts = re.split(r"\s+", (full_name or "").strip())
-    parts = [p for p in parts if p]
-    first = middle = surname = ""
-    if len(parts) >= 3:
-        first, middle, surname = parts[0], parts[1], " ".join(parts[2:])
-    elif len(parts) == 2:
-        first, surname = parts[0], parts[1]
-    elif len(parts) == 1:
-        first = parts[0]
-    return first, middle, surname
-
+# modify extract_from_image_path to try pytesseract then fallback to OCR.space
 def extract_from_image_path(img_path):
     """Extract text from one image path and parse fields."""
     proc = preprocess_image(img_path)
-    # try PIL first
+    text = ""
+    # Try pytesseract first (works if binary exists) - safe try
     try:
         text = pytesseract.image_to_string(Image.open(proc))
-    except UnidentifiedImageError:
-        # fallback to cv2 read + pytesseract (less reliable but better than crash)
-        img = cv2.imread(proc)
-        if img is None:
-            return None, f"Could not read image {img_path}"
-        text = pytesseract.image_to_string(img)
-    except Exception as e:
-        # generic fallback
-        img = cv2.imread(proc)
-        if img is None:
-            return None, f"OCR error for {img_path}: {e}"
-        text = pytesseract.image_to_string(img)
-
+    except Exception:
+        text = ""
+    # If empty or very short, use OCR.space (via streamlit secrets)
+    if not text or len(text.strip()) < 20:
+        api_key = None
+        try:
+            api_key = st.secrets["OCRSPACE_API_KEY"]
+        except Exception:
+            api_key = None
+        if api_key:
+            text, err = ocr_space_file(proc, api_key)
+            if err:
+                # return error to be shown
+                return None, err
+        else:
+            # no API key set; return error so user can set secrets
+            return None, "Tesseract not available and OCR API key not set. Add OCRSPACE_API_KEY in Streamlit secrets."
+    # proceed with parsing as before
     txt = " ".join(text.split())
     txt_lower = txt.lower()
 
@@ -101,33 +90,3 @@ def extract_from_image_path(img_path):
         "RawTextSample": txt[:300]
     }
     return result, None
-
-def extract_data(file_path):
-    """
-    Accept a path to an uploaded file. If PDF -> convert pages to images and process each.
-    Returns a list of records (one per processed image/page) and list of errors.
-    """
-    records = []
-    errors = []
-
-    # If file is PDF, convert to images first
-    ext = os.path.splitext(file_path)[1].lower()
-    image_paths = []
-    if ext == ".pdf":
-        try:
-            image_paths = pdf_to_images(file_path)
-        except Exception as e:
-            errors.append(f"PDF conversion failed for {file_path}: {e}")
-            return records, errors
-    else:
-        image_paths = [file_path]
-
-    for img in image_paths:
-        rec, err = extract_from_image_path(img)
-        if rec:
-            rec["File"] = os.path.basename(file_path)
-            records.append(rec)
-        else:
-            errors.append(err or f"Unknown error processing {img}")
-
-    return records, errors
