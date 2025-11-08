@@ -4,3 +4,5 @@ pandas
 requests
 pillow
 numpy
+google-cloud-vision
+google-auth
