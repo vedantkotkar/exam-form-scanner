@@ -1,4 +1,13 @@
-import json, streamlit as st
+
+# app.py
+import streamlit as st
+import pandas as pd
+import os
+
+import streamlit as st
+import json
+from extract import extract_data  # if you already have this line
+
 try:
     creds = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
     st.success(f"✅ Google key loaded. Project: {creds['project_id']}")
@@ -6,10 +15,6 @@ except Exception as e:
     st.error("❌ Failed to load GCP key:")
     st.code(str(e))
 
-# app.py
-import streamlit as st
-import pandas as pd
-import os
 
 from extract import extract_data
 
