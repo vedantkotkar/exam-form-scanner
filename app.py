@@ -1,3 +1,11 @@
+import json, streamlit as st
+try:
+    creds = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
+    st.success(f"✅ Google key loaded. Project: {creds['project_id']}")
+except Exception as e:
+    st.error("❌ Failed to load GCP key:")
+    st.code(str(e))
+
 # app.py
 import streamlit as st
 import pandas as pd
