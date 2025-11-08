@@ -2,6 +2,11 @@
 import streamlit as st
 import pandas as pd
 import os
+# TEMP test: remove after
+import json, streamlit as st
+from extract import preprocess_for_ocr, crop_bottom_area
+st.write("Running quick Vision test...")
+# place a small image named test.jpg in uploads and click run, or upload one after this appears
 
 from extract import extract_data
 
