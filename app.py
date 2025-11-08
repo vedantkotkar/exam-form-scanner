@@ -6,9 +6,9 @@ from extract import extract_data
 
 st.set_page_config(page_title="Exam Form Scanner", layout="centered")
 st.title("🧾 Exam Form Scanner (Prototype)")
-st.markdown("Upload scanned registration forms (JPG/PNG/PDF). The app will extract: First, Middle, Surname, Class, Mobile, School, Medium.")
+st.markdown("Upload scanned registration form images (JPG/PNG). For best results use clear photos, 300 DPI.")
 
-uploaded_files = st.file_uploader("Upload files", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload files", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
     os.makedirs("uploads", exist_ok=True)
@@ -39,8 +39,8 @@ if uploaded_files:
         st.warning("No records extracted.")
 
     if all_errors:
-        st.error("Some files had errors. See details below:")
+        st.error("Some files had issues:")
         for e in all_errors:
             st.write("- " + str(e))
 else:
-    st.info("Upload 1-20 scanned form images or PDFs to see extraction results.")
+    st.info("Upload clear JPG/PNG images of each filled form (one page per image). PDFs not supported in this simplified version.")
