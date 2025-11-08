@@ -13,22 +13,34 @@ uploaded_files = st.file_uploader("Upload files", type=["jpg", "jpeg", "png", "p
 if uploaded_files:
     os.makedirs("uploads", exist_ok=True)
     os.makedirs("outputs", exist_ok=True)
-    results = []
+    all_results = []
+    all_errors = []
+
     for file in uploaded_files:
         file_path = os.path.join("uploads", file.name)
         with open(file_path, "wb") as f:
             f.write(file.read())
         st.info(f"Processing {file.name} ...")
-        data = extract_data(file_path)
-        results.append(data)
+        records, errors = extract_data(file_path)
+        if records:
+            all_results.extend(records)
+        if errors:
+            all_errors.extend(errors)
 
-    df = pd.DataFrame(results)
-    st.success("✅ Extraction complete")
-    st.dataframe(df)
+    if all_results:
+        df = pd.DataFrame(all_results)
+        st.success("✅ Extraction complete")
+        st.dataframe(df)
+        csv_path = os.path.join("outputs", "exam_forms_output.csv")
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        with open(csv_path, "rb") as f:
+            st.download_button("⬇️ Download CSV", f, file_name="exam_forms_output.csv")
+    else:
+        st.warning("No records extracted.")
 
-    csv_path = os.path.join("outputs", "exam_forms_output.csv")
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    with open(csv_path, "rb") as f:
-        st.download_button("⬇️ Download CSV", f, file_name="exam_forms_output.csv")
+    if all_errors:
+        st.error("Some files had errors. See details below:")
+        for e in all_errors:
+            st.write("- " + str(e))
 else:
-    st.info("Upload 1-20 scanned form images to see extraction results.")
+    st.info("Upload 1-20 scanned form images or PDFs to see extraction results.")
