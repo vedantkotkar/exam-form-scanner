@@ -1,21 +1,47 @@
 # extract.py
 import os
 import re
+import json
 import cv2
 import requests
 import streamlit as st
 from PIL import Image
 import numpy as np
 
-# ------------------ Helper: OCR.space call with compression + retry ------------------
-def ocr_space_file(image_path, api_key, language='eng', max_size_kb=800):
-    """
-    Send image file to OCR.space and return (text, error).
-    Compresses image if larger than max_size_kb, retries once on timeout.
-    """
-    url_api = "https://api.ocr.space/parse/image"
+# Optional Google Vision client libraries
+try:
+    from google.cloud import vision
+    from google.oauth2 import service_account
+    HAVE_GOOGLE = True
+except Exception:
+    HAVE_GOOGLE = False
 
-    # compress if large
+# ------------------ Google Vision helper ------------------
+def vision_text_from_image(image_path, service_account_info):
+    """
+    Uses Google Cloud Vision to get text from an image.
+    service_account_info: Python dict parsed from service account JSON.
+    Returns (text, error)
+    """
+    try:
+        credentials = service_account.Credentials.from_service_account_info(service_account_info)
+        client = vision.ImageAnnotatorClient(credentials=credentials)
+        with open(image_path, "rb") as f:
+            content = f.read()
+        image = vision.Image(content=content)
+        response = client.text_detection(image=image)
+        if response.error.message:
+            return "", f"Google Vision error: {response.error.message}"
+        texts = response.text_annotations
+        if not texts:
+            return "", None
+        return texts[0].description, None
+    except Exception as e:
+        return "", f"Google Vision exception: {e}"
+
+# ------------------ OCR.space helper (fallback) ------------------
+def ocr_space_file(image_path, api_key, language='eng', max_size_kb=800):
+    url_api = "https://api.ocr.space/parse/image"
     try:
         im = Image.open(image_path)
         size_kb = os.path.getsize(image_path) / 1024
@@ -49,13 +75,8 @@ def ocr_space_file(image_path, api_key, language='eng', max_size_kb=800):
                 return "", f"OCR.space request failed: {e}"
     return "", "Unexpected OCR failure"
 
-# ------------------ Image crop + preprocess ------------------
+# ------------------ Preprocess + crop helpers ------------------
 def crop_bottom_area(image_path, crop_ratio=0.45):
-    """
-    Crop the bottom part of the image where the filled form fields are expected.
-    crop_ratio = fraction from bottom to keep (0.45 = keep bottom 45%).
-    Returns path to cropped image (temp file).
-    """
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -71,10 +92,6 @@ def crop_bottom_area(image_path, crop_ratio=0.45):
         return image_path
 
 def preprocess_for_ocr(image_path):
-    """
-    Do basic cleaning (grayscale, blur, Otsu threshold, small morph close) and upscale.
-    Returns path to processed image.
-    """
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -86,10 +103,8 @@ def preprocess_for_ocr(image_path):
         thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         kernel = np.ones((2,2), np.uint8)
         morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
-        # upscale to help OCR on box handwriting
         h, w = morph.shape
-        scale = 2
-        morph = cv2.resize(morph, (w*scale, h*scale))
+        morph = cv2.resize(morph, (w*2, h*2))
         out = image_path + ".proc.jpg"
         cv2.imwrite(out, morph)
         return out
@@ -115,38 +130,40 @@ def normalize_name(full_name):
 
 # ------------------ main extraction for one image ------------------
 def extract_from_image_path(img_path):
-    """
-    Preprocess crop -> send to OCR.space -> parse fields -> return (record, error)
-    """
-    # 1. crop bottom region
+    # crop + preprocess
     cropped = crop_bottom_area(img_path, crop_ratio=0.45)
-
-    # 2. preprocess for OCR (binarize + upscale)
     proc = preprocess_for_ocr(cropped)
 
-    # 3. get API key
-    api_key = None
-    try:
-        api_key = st.secrets["OCRSPACE_API_KEY"]
-    except Exception:
-        return None, "OCRSPACE_API_KEY not set in Streamlit secrets."
+    # Try Google Vision if secret is provided and library is present
+    google_secret = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON", None)
+    text = ""
+    if google_secret and HAVE_GOOGLE:
+        try:
+            service_info = json.loads(google_secret)
+            text, err = vision_text_from_image(proc, service_info)
+            if err:
+                # fallback to OCR.space
+                text = ""
+        except Exception as e:
+            text = ""  # fallback path
 
-    # 4. call OCR.space
-    text, err = ocr_space_file(proc, api_key)
-    if err:
-        return None, err
+    # If Google not used or returned empty, try OCR.space if key exists
+    if not text:
+        ocr_key = st.secrets.get("OCRSPACE_API_KEY", None)
+        if ocr_key:
+            text, err = ocr_space_file(proc, ocr_key)
+            if err:
+                return None, f"OCR.space failed: {err}"
+        else:
+            return None, "Neither Google Vision configured nor OCR.space key set."
 
     txt = " ".join(text.split())
     txt_lower = txt.lower()
 
-    # ----- parse Medium -----
-    medium = ""
-    if re.search(r"\benglish\b", txt_lower):
-        medium = "English"
-    elif re.search(r"\bvernacular\b|\bmarathi\b|\bhindi\b", txt_lower):
-        medium = "Vernacular"
+    # parse Medium
+    medium = "English" if re.search(r"\benglish\b", txt_lower) else ("Vernacular" if re.search(r"\bvernacular\b|\bmarathi\b|\bhindi\b", txt_lower) else "")
 
-    # ----- parse mobile -----
+    # parse mobile
     mobile = ""
     m = re.search(r"(?:\+?91[\-\s]?|0)?\s*(\d{10})", txt)
     if m:
@@ -156,19 +173,18 @@ def extract_from_image_path(img_path):
         if m2:
             mobile = m2.group(1)
 
-    # ----- parse class -----
+    # class
     class_std = safe_search(r"(?:Class|Std|Standard)[:\-\s]*([A-Za-z0-9\s\/\-]{1,12})", txt, flags=re.IGNORECASE)
     if not class_std:
-        c_match = re.search(r"\b(First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth|XI|X|XI|XII)\b", txt, re.IGNORECASE)
+        c_match = re.search(r"\b(First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth|XI|XII|XI|X)\b", txt, re.IGNORECASE)
         class_std = c_match.group(0) if c_match else ""
 
-    # ----- parse name (best effort from boxed uppercase) -----
-    full_name = safe_search(r"Name of the Student[:\-\s]*([A-Z\s]{3,60})", txt)
+    # name
+    full_name = safe_search(r"Name of the Student[:\-\s]*([A-Z\s]{3,80})", txt)
     if not full_name:
-        full_name = safe_search(r"Name[:\-\s]*([A-Z\s]{3,60})", txt)
+        full_name = safe_search(r"Name[:\-\s]*([A-Z\s]{3,80})", txt)
     first = middle = surname = ""
     if full_name:
-        # remove stray non-letters
         cleaned = re.sub(r"[^A-Z\s]", " ", full_name).strip()
         parts = re.split(r"\s+", cleaned)
         if len(parts) >= 3:
@@ -178,21 +194,18 @@ def extract_from_image_path(img_path):
         elif len(parts) == 1:
             first = parts[0]
 
-    # ----- parse school -----
-    school = safe_search(r"(?:Name of School|School|Institution)[:\-\s]*([A-Za-z0-9\.\'\-\s]{5,80})", txt)
+    # school
+    school = safe_search(r"(?:Name of School|School|Institution)[:\-\s]*([A-Za-z0-9\.\'\-\s]{5,120})", txt)
     if not school:
-        # heuristic: find long capitalized phrase before 'Medium' or 'Total'
-        m_school = re.search(r"([A-Z][A-Z0-9\.\'\-\s]{6,80})\s+(?:Medium|Total|Fee|₹)", txt)
+        m_school = re.search(r"([A-Z][A-Z0-9\.\'\-\s]{6,120})\s+(?:Medium|Total|Fee|₹)", txt)
         if m_school:
             school = m_school.group(1).strip()
 
-    # ----- confidence flag -----
     confidence = "High"
     if not mobile or not first:
         confidence = "Low"
 
     result = {
-        "File": os.path.basename(img_path),
         "First Name": first,
         "Middle Name": middle,
         "Surname": surname,
@@ -201,15 +214,11 @@ def extract_from_image_path(img_path):
         "School": school,
         "Medium": medium,
         "Confidence": confidence,
-        "RawTextSample": txt[:300]
+        "RawTextSample": txt[:400]
     }
     return result, None
 
-# ------------------ top-level: accepts an uploaded file path ------------------
 def extract_data(file_path):
-    """
-    Accept a path to an image file (jpg/png). Returns (records_list, errors_list)
-    """
     records = []
     errors = []
     ext = os.path.splitext(file_path)[1].lower()
