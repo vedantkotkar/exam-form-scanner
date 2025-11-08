@@ -1,8 +1,12 @@
-streamlit
-opencv-python-headless
-pandas
-pillow
-numpy
-google-cloud-vision
-google-auth
-requests
+# --- Core dependencies ---
+streamlit==1.36.0
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pillow==10.3.0
+pandas==2.2.2
+
+# --- Google Cloud Vision ---
+google-cloud-vision==3.7.4
+
+# --- Optional (for fuzzy matching / text correction later) ---
+rapidfuzz==3.9.3
