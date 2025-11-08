@@ -149,19 +149,57 @@ def extract_data(file_path):
 # 6. Batch Handler (for multiple files)
 # --------------------------
 def process_files(uploaded_files):
-    """Handle multiple uploads and return DataFrame + error list."""
+    """
+    Accepts either:
+      - list of Streamlit UploadedFile objects (with .name and .read()), or
+      - list of local file path strings
+      - or a mixed list of both.
+    Returns: (pandas.DataFrame, errors_list)
+    """
     all_records = []
-    error_files = []
+    error_list = []
 
-    for uploaded_file in uploaded_files:
-        with open(uploaded_file.name, "wb") as f:
-            f.write(uploaded_file.read())
-
-        records, err = extract_data(uploaded_file.name)
-        if err:
-            error_files.append({"file": uploaded_file.name, "error": err})
+    for item in uploaded_files:
+        # Determine path
+        if isinstance(item, str):
+            # it's already a path on disk
+            file_path = item
+            display_name = os.path.basename(item)
         else:
-            all_records.extend(records)
+            # assume it's a file-like object (UploadedFile)
+            # write it to a temp file and use that path
+            try:
+                display_name = getattr(item, "name", "uploaded_file")
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(display_name)[1] or ".jpg")
+                tmp.write(item.read())
+                tmp.close()
+                file_path = tmp.name
+            except Exception as e:
+                error_list.append({"file": getattr(item, "name", str(item)), "error": f"Failed to save uploaded file: {e}"})
+                continue
 
-    df = pd.DataFrame(all_records)
-    return df, error_files
+        # Now call extract_data(file_path)
+        try:
+            records, err = extract_data(file_path)
+            if err:
+                error_list.append({"file": display_name, "error": err})
+            else:
+                # append records (list of dicts)
+                for r in records:
+                    # ensure 'File' column exists and uses the display name (not temp path)
+                    if "File" not in r or not r["File"]:
+                        r["File"] = display_name
+                    all_records.append(r)
+        except Exception as e:
+            error_list.append({"file": display_name, "error": str(e)})
+
+        # If we created a temp file from an UploadedFile, we can optionally remove it
+        if not isinstance(item, str):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+    df = pd.DataFrame(all_records) if all_records else pd.DataFrame()
+    return df, error_list
+
