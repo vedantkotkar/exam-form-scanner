@@ -1,8 +1,8 @@
 streamlit
 opencv-python-headless
 pandas
-requests
 pillow
 numpy
 google-cloud-vision
 google-auth
+requests
