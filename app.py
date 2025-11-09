@@ -1,38 +1,26 @@
-# app.py (fixed: read uploaded files into memory once)
+# app.py
 import streamlit as st
-import json, io, re, numpy as np, pandas as pd
+import io, os, json, re
+import numpy as np, pandas as pd
 from PIL import Image, UnidentifiedImageError
 import cv2
 
-st.set_page_config(page_title="Template OCR (Percent) - Fixed", layout="wide")
-st.title("Exam Form Scanner — Template-based (percent coords)")
+st.set_page_config(page_title="Exam Form Scanner — Final", layout="wide")
+st.title("Exam Form Scanner — Template-based OCR (final)")
 
-# Load template.json (percent-based)
-TEMPLATE_JSON = "template.json"
-def load_template():
-    try:
-        with open(TEMPLATE_JSON, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
-
-template = load_template()
-if not template:
-    st.warning("template.json not found in repo. Upload template.json (I provided one) to the repo root or upload via file uploader below.")
-else:
-    st.success("Loaded template.json")
-
-# OCR engine selection
+# ----------------- OCR engine init -----------------
 USE_EASYOCR = False
 reader = None
 try:
     import easyocr
     reader = easyocr.Reader(['en'], gpu=False)
     USE_EASYOCR = True
+    st.info("Using EasyOCR engine.")
 except Exception:
     try:
-        import pytesseract  # noqa
+        import pytesseract  # noqa: F401
         USE_EASYOCR = False
+        st.info("EasyOCR not available, falling back to pytesseract (requires Tesseract binary if run locally).")
     except Exception:
         st.error("No OCR engine available. Add easyocr or pytesseract to requirements.")
         st.stop()
@@ -51,14 +39,16 @@ def run_pytesseract(img_np):
         gray = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,2)
     except Exception:
         pass
-    txt = pytesseract.image_to_string(gray, lang='eng')
-    return txt, 0.0
+    text = pytesseract.image_to_string(gray, lang='eng')
+    # We return 0.0 for confidence because computing it needs image_to_data parsing; acceptable fallback.
+    return text, 0.0
 
+# ----------------- helpers -----------------
 def normalize_phone(text):
     if not text: return ""
-    digits = re.sub(r'\D','', text)
-    if len(digits)==10: return digits
-    if len(digits)==12 and digits.startswith("91"): return digits[2:]
+    digits = re.sub(r'\D', '', text)
+    if len(digits) == 10: return digits
+    if len(digits) == 12 and digits.startswith("91"): return digits[2:]
     return digits
 
 def split_name_line(line):
@@ -68,141 +58,286 @@ def split_name_line(line):
     if len(parts)==2: return parts[0],"",parts[1]
     return parts[0], " ".join(parts[1:-1]), parts[-1]
 
-# UI: optional blank template upload
-st.markdown("**Step 1 — (Optional) upload a blank template image** — best if it is a clear scan/phone-photo of the blank form.")
-blank_template_file = st.file_uploader("Upload blank template (optional)", type=['jpg','jpeg','png'])
+def pct_to_pixels_field(pct_field, width, height):
+    x1 = int(pct_field['x1_pct'] * width)
+    y1 = int(pct_field['y1_pct'] * height)
+    x2 = int(pct_field['x2_pct'] * width)
+    y2 = int(pct_field['y2_pct'] * height)
+    x1 = max(0, min(x1, width-1)); x2 = max(0, min(x2, width-1))
+    y1 = max(0, min(y1, height-1)); y2 = max(0, min(y2, height-1))
+    return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
-st.markdown("**Step 2 — Upload filled form images (multiple)**")
-filled_files = st.file_uploader("Drag & drop filled forms (multiple)", type=['jpg','jpeg','png'], accept_multiple_files=True)
+def load_json_if_exists(name):
+    if os.path.exists(name):
+        with open(name, 'r') as f:
+            return json.load(f)
+    return None
 
-# Read blank template bytes once (if provided)
-tpl_width = tpl_height = None
-if blank_template_file is not None:
+def safe_open_image_bytes(b):
     try:
-        blank_bytes = blank_template_file.read()
-        img_tpl = Image.open(io.BytesIO(blank_bytes)).convert("RGB")
-        tpl_width, tpl_height = img_tpl.size
-        st.image(img_tpl, caption="Uploaded blank template (used for scaling)", use_column_width=False)
+        return Image.open(io.BytesIO(b)).convert("RGB")
     except UnidentifiedImageError:
-        st.error("Uploaded blank template could not be read as an image. Please upload a valid JPG/PNG.")
+        return None
 
-if filled_files:
-    # IMPORTANT: read all uploaded filled files into memory once to avoid stream exhaustion
-    filled_bytes_list = []
-    for f in filled_files:
+# ----------------- Template loading logic -----------------
+# Priority:
+# 1) template_pixels.json (pixel coords)
+# 2) template.json (percent coords) + blank template image (or first filled image) -> conversion
+pixel_template = load_json_if_exists("template_pixels.json")
+percent_template = load_json_if_exists("template.json")
+
+if pixel_template:
+    st.success("Found template_pixels.json — using pixel boxes.")
+elif percent_template:
+    st.info("Found percent-based template.json — will convert to pixels using uploaded blank or first image.")
+else:
+    st.warning("No template_pixels.json or template.json found in repo. Place one in repo root or upload percent template below.")
+
+# UI: allow user to upload pixel-template or percent-template / blank template as a fallback
+st.markdown("### Optional: upload template files here")
+colA, colB = st.columns(2)
+with colA:
+    upload_pixel = st.file_uploader("Upload template_pixels.json (optional)", type=['json'], key="up_pix")
+with colB:
+    upload_percent = st.file_uploader("Upload template.json (percent coords) (optional)", type=['json'], key="up_pct")
+
+if upload_pixel:
+    try:
+        tplp = json.load(upload_pixel)
+        with open("template_pixels.json","w") as f:
+            json.dump(tplp, f, indent=2)
+        pixel_template = tplp
+        st.success("Saved template_pixels.json to repo root (workspace).")
+    except Exception as e:
+        st.error(f"Failed to read uploaded pixel template: {e}")
+
+if upload_percent:
+    try:
+        tplpct = json.load(upload_percent)
+        with open("template.json","w") as f:
+            json.dump(tplpct, f, indent=2)
+        percent_template = tplpct
+        st.success("Saved template.json (percent) to repo root.")
+    except Exception as e:
+        st.error(f"Failed to read uploaded percent template: {e}")
+
+# Allow blank template image upload for percent->pixel conversion
+st.markdown("---")
+st.markdown("### Template image (optional, recommended for percent->pixel conversion)")
+blank_template_file = st.file_uploader("Upload blank (clean) template image (JPG/PNG) — optional but recommended", type=['jpg','jpeg','png'], key="blank")
+
+# ----------------- File upload (filled images) -----------------
+st.markdown("---")
+st.markdown("### Upload filled form images (multiple)")
+uploaded = st.file_uploader("Drag & drop filled forms (multiple)", type=['jpg','jpeg','png'], accept_multiple_files=True, key="forms")
+
+# ----------------- Process uploads -----------------
+if uploaded:
+    # Read uploaded filled images into memory once
+    filled_bytes = []
+    for f in uploaded:
         try:
             b = f.read()
             if not b:
-                st.error(f"Warning: uploaded file {f.name} appears empty.")
-            filled_bytes_list.append({"name": f.name, "bytes": b})
+                st.warning(f"Uploaded file {f.name} is empty")
+            filled_bytes.append({"name": f.name, "bytes": b})
         except Exception as e:
-            st.error(f"Failed to read file {f.name}: {e}")
-            filled_bytes_list.append({"name": f.name, "bytes": b""})
+            st.warning(f"Failed reading {f.name}: {e}")
+            filled_bytes.append({"name": f.name, "bytes": b""})
 
-    # if no blank template provided, infer size from first filled image bytes
-    if tpl_width is None:
-        # find first non-empty bytes
-        first_nonempty = None
-        for itm in filled_bytes_list:
-            if itm["bytes"]:
-                first_nonempty = itm["bytes"]
-                break
-        if first_nonempty is None:
-            st.error("No valid filled image bytes found to infer template size.")
-            st.stop()
-        try:
-            img_tmp = Image.open(io.BytesIO(first_nonempty)).convert("RGB")
-            tpl_width, tpl_height = img_tmp.size
-        except UnidentifiedImageError:
-            st.error("Could not read first filled image to infer size. Ensure uploaded images are valid JPG/PNG.")
-            st.stop()
+    # prepare template boxes (pixel)
+    pixel_boxes = None
+    tpl_w = tpl_h = None
 
-    # require template.json
-    template = load_template()
-    if not template:
-        st.error("template.json missing — upload template.json to repo root or add one. The app needs it to compute crop positions.")
+    # 1) If pixel template exists in workspace, use it
+    if os.path.exists("template_pixels.json"):
+        tplp = load_json_if_exists("template_pixels.json")
+        pixel_boxes = tplp["fields"]
+        tpl_w = tplp.get("width")
+        tpl_h = tplp.get("height")
+        st.info("Using template_pixels.json from workspace.")
+    # 2) else if percent template exists -> convert using blank_template_file or first uploaded image
+    elif os.path.exists("template.json"):
+        tplpct = load_json_if_exists("template.json")
+        # determine width/height using blank template if provided
+        if blank_template_file:
+            try:
+                blank_bytes = blank_template_file.read()
+                img_tpl = safe_open_image_bytes(blank_bytes)
+                if img_tpl is None:
+                    st.error("Uploaded blank template couldn't be read as image.")
+                    st.stop()
+                tpl_w, tpl_h = img_tpl.size
+                st.info(f"Using uploaded blank template size {tpl_w}x{tpl_h}")
+            except Exception as e:
+                st.error(f"Failed processing blank template: {e}")
+                st.stop()
+        else:
+            # infer from first valid filled image bytes
+            first_valid = None
+            for it in filled_bytes:
+                if it["bytes"]:
+                    first_valid = it["bytes"]; break
+            if not first_valid:
+                st.error("No valid filled images to infer template size. Upload a blank template or a valid filled image.")
+                st.stop()
+            img_tpl = safe_open_image_bytes(first_valid)
+            if img_tpl is None:
+                st.error("Could not read first filled image to infer size. Upload a blank template image.")
+                st.stop()
+            tpl_w, tpl_h = img_tpl.size
+            st.info(f"Inferred template size from first uploaded image: {tpl_w}x{tpl_h}")
+
+        # convert percent coords -> pixel coords
+        pixel_boxes = {}
+        for fname, coords in tplpct["fields"].items():
+            px = pct_to_pixels_field(coords, tpl_w, tpl_h)
+            pixel_boxes[fname] = px
+        # save pixel template for future runs
+        out = {"description": tplpct.get("description","pixel template"), "width": tpl_w, "height": tpl_h, "fields": pixel_boxes}
+        with open("template_pixels.json","w") as f:
+            json.dump(out, f, indent=2)
+        st.success("Converted percent template -> template_pixels.json and saved it.")
+    else:
+        st.error("No template.json or template_pixels.json available. Upload one to repo or via the upload widgets above.")
         st.stop()
 
-    # compute pixel boxes from percent template and tpl_width/tpl_height
-    fields = template['fields']
-    pixel_boxes = {}
-    for fname, val in fields.items():
-        x1 = int(val['x1_pct'] * tpl_width)
-        y1 = int(val['y1_pct'] * tpl_height)
-        x2 = int(val['x2_pct'] * tpl_width)
-        y2 = int(val['y2_pct'] * tpl_height)
-        x1 = max(0, min(x1, tpl_width-1)); x2 = max(0, min(x2, tpl_width-1))
-        y1 = max(0, min(y1, tpl_height-1)); y2 = max(0, min(y2, tpl_height-1))
-        # ensure non-empty box
-        if x2 <= x1 or y2 <= y1:
-            st.error(f"Invalid box for field {fname}: {(x1,y1,x2,y2)}")
-            st.stop()
-        pixel_boxes[fname] = (x1,y1,x2,y2)
+    # Now we have pixel_boxes and tpl_w, tpl_h
+    if not pixel_boxes or not tpl_w or not tpl_h:
+        st.error("Template boxes or template size missing. Cannot proceed.")
+        st.stop()
 
-    st.write("Computed pixel boxes (example):")
-    st.json({k: pixel_boxes[k] for k in pixel_boxes})
+    # show boxes for verification (small)
+    st.markdown("Computed pixel boxes (fields):")
+    st.json(pixel_boxes)
 
+    # Process each file: open from bytes, resize to template size if needed, crop fields, OCR
     rows = []
-    progress = st.progress(0)
-    total = len(filled_bytes_list)
+    # show crop preview area for the first file
+    show_preview = st.checkbox("Show crop previews for first processed image", value=True)
 
-    for idx, itm in enumerate(filled_bytes_list, start=1):
+    total = len(filled_bytes)
+    pb = st.progress(0)
+    for idx, itm in enumerate(filled_bytes, start=1):
         name = itm["name"]
         b = itm["bytes"]
-        try:
-            img_pil = Image.open(io.BytesIO(b)).convert("RGB")
-        except UnidentifiedImageError:
-            st.warning(f"Skipping file {name}: could not identify image.")
-            progress.progress(idx/total)
-            continue
+        if not b:
+            st.warning(f"Skipping empty file {name}")
+            pb.progress(idx/total); continue
+        img_pil = safe_open_image_bytes(b)
+        if img_pil is None:
+            st.warning(f"Skipping invalid image {name}")
+            pb.progress(idx/total); continue
 
         img_np = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-        h, w = img_np.shape[:2]
-        # If uploaded filled image size differs from template size, scale image to template size
-        if (w, h) != (tpl_width, tpl_height):
-            warped = cv2.resize(img_np, (tpl_width, tpl_height), interpolation=cv2.INTER_AREA)
+        h,w = img_np.shape[:2]
+        # scale to template size if different
+        if (w,h) != (tpl_w, tpl_h):
+            warped = cv2.resize(img_np, (tpl_w, tpl_h), interpolation=cv2.INTER_AREA)
         else:
             warped = img_np.copy()
 
         rec = {"source_file": name}
-        for fname, (x1,y1,x2,y2) in pixel_boxes.items():
-            crop = warped[y1:y2, x1:x2]
-            if crop.size == 0:
-                text, conf = "", 0.0
+        # for preview only, store first image crops in a dict
+        preview_crops = {}
+        for fname, box in pixel_boxes.items():
+            x1,y1,x2,y2 = box["x1"], box["y1"], box["x2"], box["y2"]
+            # guard
+            x1 = max(0, min(x1, tpl_w-1)); x2 = max(0, min(x2, tpl_w-1))
+            y1 = max(0, min(y1, tpl_h-1)); y2 = max(0, min(y2, tpl_h-1))
+            if x2<=x1 or y2<=y1:
+                crop_text, conf = "", 0.0
             else:
+                crop = warped[y1:y2, x1:x2]
                 if USE_EASYOCR:
-                    text, conf = run_easyocr(crop)
+                    crop_text, conf = run_easyocr(crop)
                 else:
-                    text, conf = run_pytesseract(crop)
-            rec[fname] = text.strip()
+                    crop_text, conf = run_pytesseract(crop)
+                crop_text = crop_text.strip()
+            rec[fname] = crop_text
             rec[fname + "_conf"] = float(conf)
-        # post-process
+            if idx==1 and show_preview:
+                try:
+                    # convert crop to PNG bytes for display later
+                    if x2>x1 and y2>y1:
+                        cimg = crop
+                        _, png = cv2.imencode('.png', cimg)
+                        preview_crops[fname] = png.tobytes()
+                except Exception:
+                    preview_crops[fname] = None
+
+        # postprocessing
         if "mobile" in rec:
-            rec["mobile_parsed"] = normalize_phone(rec.get("mobile", ""))
+            rec["mobile_parsed"] = normalize_phone(rec.get("mobile",""))
         if "full_name" in rec and (not rec.get("first_name")):
-            f1, m1, l1 = split_name_line(rec.get("full_name", ""))
-            rec["first_name_parsed"] = f1; rec["middle_name_parsed"] = m1; rec["last_name_parsed"] = l1
+            f1,m1,l1 = split_name_line(rec.get("full_name",""))
+            rec["first_name_parsed"]=f1; rec["middle_name_parsed"]=m1; rec["last_name_parsed"]=l1
 
         rows.append(rec)
-        progress.progress(idx/total)
+        pb.progress(idx/total)
 
-    progress.empty()
+    pb.empty()
+
     if not rows:
-        st.error("No rows processed — check your uploaded files.")
+        st.error("No valid rows processed.")
+        st.stop()
+
+    df = pd.DataFrame(rows)
+    # Display crop previews for the first image if requested
+    if show_preview and 'preview_crops' in locals() and preview_crops:
+        st.markdown("#### Crop previews for first file (verify boxes)")
+        cols = st.columns(min(4, len(preview_crops)))
+        i = 0
+        for k, imgbytes in preview_crops.items():
+            with cols[i % len(cols)]:
+                st.markdown(f"**{k}**")
+                if imgbytes:
+                    st.image(Image.open(io.BytesIO(imgbytes)), use_column_width=True)
+                else:
+                    st.write("no preview")
+            i += 1
+
+    # Choose display columns
+    display_cols = ["source_file"]
+    # attempt to show name split fields if present; otherwise the crop full_name
+    if "full_name" in df.columns:
+        display_cols += ["full_name"]
+    if "first_name" in df.columns:
+        display_cols += ["first_name","middle_name","last_name"]
+    if "mobile" in df.columns:
+        display_cols += ["mobile","mobile_parsed"]
+    if "class" in df.columns:
+        display_cols += ["class"]
+    if "school" in df.columns:
+        display_cols += ["school"]
+    if "medium" in df.columns:
+        display_cols += ["medium"]
+    # always include confidences if present
+    conf_cols = [c for c in df.columns if c.endswith("_conf")]
+    display_cols += conf_cols
+
+    # Show results and allow editing
+    st.markdown("### Extracted results — edit then download")
+    # Prefer experimental_data_editor if available
+    if hasattr(st, "experimental_data_editor"):
+        try:
+            edited = st.experimental_data_editor(df[display_cols], num_rows="dynamic")
+        except Exception:
+            st.warning("Inline editor not available in this runtime — showing read-only table with row editor below.")
+            edited = df[display_cols]
     else:
-        df = pd.DataFrame(rows)
-        display_cols = ["source_file","full_name","first_name","middle_name","last_name","mobile","mobile_parsed","class","school","medium"]
-        display_cols = [c for c in display_cols if c in df.columns]
-        st.markdown("### Extracted (by-crop) — review below")
-        st.dataframe(df[display_cols], use_container_width=True)
+        st.warning("Inline editor not available in this Streamlit runtime — showing read-only table with row editor below.")
+        edited = df[display_cols]
 
-        csv_bytes = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download CSV", csv_bytes, "extracted_by_template.csv", "text/csv")
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='extracted')
-        buf.seek(0)
-        st.download_button("Download Excel", buf.read(), "extracted_by_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # Provide downloads: use the edited table if available, else df
+    if isinstance(edited, pd.DataFrame):
+        out_df = edited.copy()
+    else:
+        out_df = df.copy()
 
-else:
-    st.info("Upload filled forms to process. If results are a bit off, you can tweak template.json pct values and re-run.")
+    csv_bytes = out_df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download CSV", csv_bytes, "extracted_forms.csv", "text/csv")
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        out_df.to_excel(writer, index=False, sheet_name="extracted")
+    buf.
