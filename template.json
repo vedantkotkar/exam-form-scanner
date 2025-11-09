@@ -1,0 +1,14 @@
+{
+  "description": "Percent-based template for English Marathon form. Coordinates are fractions (0..1) relative to image width/height.",
+  "fields": {
+    "full_name": {"x1_pct": 0.065, "y1_pct": 0.62, "x2_pct": 0.93, "y2_pct": 0.685},
+    "first_name": {"x1_pct": 0.065, "y1_pct": 0.695, "x2_pct": 0.42, "y2_pct": 0.745},
+    "middle_name": {"x1_pct": 0.43, "y1_pct": 0.695, "x2_pct": 0.68, "y2_pct": 0.745},
+    "last_name": {"x1_pct": 0.69, "y1_pct": 0.695, "x2_pct": 0.93, "y2_pct": 0.745},
+    "class": {"x1_pct": 0.065, "y1_pct": 0.76, "x2_pct": 0.22, "y2_pct": 0.805},
+    "mobile": {"x1_pct": 0.6, "y1_pct": 0.755, "x2_pct": 0.93, "y2_pct": 0.805},
+    "school": {"x1_pct": 0.065, "y1_pct": 0.82, "x2_pct": 0.93, "y2_pct": 0.885},
+    "medium": {"x1_pct": 0.44, "y1_pct": 0.61, "x2_pct": 0.6, "y2_pct": 0.64}
+  },
+  "notes": "If crops appear off, adjust the _pct values slightly (0.01 steps)."
+}
