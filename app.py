@@ -17,7 +17,7 @@ try:
     USE_EASYOCR = True
 except Exception:
     try:
-        import pytesseract
+        import pytesseract  # noqa: F401
         USE_EASYOCR = False
     except Exception:
         st.error("No OCR engine available. Please include EasyOCR or pytesseract in requirements.")
@@ -117,10 +117,30 @@ def heuristic_extract(full_text):
     return out
 
 uploaded_files = st.file_uploader(
-    "Drag & drop images (multiple) — JPG/PNG", 
-    type=['jpg', 'jpeg', 'png'], 
+    "Drag & drop images (multiple) — JPG/PNG",
+    type=['jpg', 'jpeg', 'png'],
     accept_multiple_files=True
 )
+
+def table_editor_fallback(df):
+    """
+    Simple fallback: show dataframe and allow editing one row at a time via inputs.
+    Returns possibly-edited dataframe.
+    """
+    st.warning("Note: inline table editor is not available in this Streamlit runtime. Use the row editor below to change values, then click 'Apply changes' or download CSV directly.")
+    st.dataframe(df, use_container_width=True)
+    row_idx = st.number_input("Row to edit (index)", min_value=0, max_value=max(0, len(df)-1), value=0, step=1)
+    if st.button("Load row for edit"):
+        row = df.iloc[int(row_idx)].to_dict()
+        cols = ["Full Name","First Name","Middle Name","Last Name","Mobile","School","Class","Medium"]
+        edited = {}
+        for c in cols:
+            edited[c] = st.text_input(c, value=str(row.get(c,"")))
+        if st.button("Apply changes to row"):
+            for c in cols:
+                df.at[int(row_idx), c] = edited[c]
+            st.success(f"Applied changes to row {row_idx}")
+    return df
 
 if uploaded_files:
     rows = []
@@ -152,9 +172,17 @@ if uploaded_files:
     df = df[cols]
 
     st.markdown("### Extracted results")
-    st.write("You can edit values in the table below before downloading.")
-    edited = st.experimental_data_editor(df, num_rows="dynamic")
 
+    # --- Prefer experimental_data_editor if available, else fallback ---
+    if hasattr(st, "experimental_data_editor"):
+        try:
+            edited = st.experimental_data_editor(df, num_rows="dynamic")
+        except Exception:
+            edited = table_editor_fallback(df)
+    else:
+        edited = table_editor_fallback(df)
+
+    # offer downloads
     csv_bytes = edited.to_csv(index=False).encode('utf-8')
     st.download_button("Download CSV", csv_bytes, "extracted_forms.csv", "text/csv")
 
