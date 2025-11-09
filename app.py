@@ -186,4 +186,4 @@ if uploaded:
             pb.progress(idx / total)
             continue
         img_pil = safe_open_image_bytes(b)
-        if not img
+        if not img:
