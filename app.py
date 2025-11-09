@@ -164,6 +164,9 @@ if uploaded:
                 st.error("No valid filled images to infer template size.")
                 st.stop()
             img_tpl = safe_open_image_bytes(first_valid)
+            if not img_tpl:
+                st.error("Could not read first image to infer size.")
+                st.stop()
             tpl_w, tpl_h = img_tpl.size
         pixel_boxes = {fn: pct_to_pixels_field(fc, tpl_w, tpl_h) for fn, fc in tplpct["fields"].items()}
         with open("template_pixels.json", "w") as f:
@@ -186,4 +189,91 @@ if uploaded:
             pb.progress(idx / total)
             continue
         img_pil = safe_open_image_bytes(b)
-        if not img:
+        if not img_pil:
+            pb.progress(idx / total)
+            continue
+
+        img_np = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        h, w = img_np.shape[:2]
+        if (w, h) != (tpl_w, tpl_h):
+            warped = cv2.resize(img_np, (tpl_w, tpl_h), interpolation=cv2.INTER_AREA)
+        else:
+            warped = img_np
+
+        rec = {"source_file": name}
+        preview_crops = {}
+
+        for fname, box in pixel_boxes.items():
+            x1, y1, x2, y2 = box["x1"], box["y1"], box["x2"], box["y2"]
+            crop = warped[y1:y2, x1:x2]
+            if crop.size == 0:
+                text, conf = "", 0.0
+            else:
+                text, conf = run_easyocr(crop) if USE_EASYOCR else run_pytesseract(crop)
+            rec[fname] = text.strip()
+            rec[fname + "_conf"] = float(conf)
+            if idx == 1 and show_preview and crop.size > 0:
+                _, buf_png = cv2.imencode(".png", crop)
+                preview_crops[fname] = buf_png.tobytes()
+
+        if "mobile" in rec:
+            rec["mobile_parsed"] = normalize_phone(rec["mobile"])
+        if "full_name" in rec and not rec.get("first_name"):
+            f1, m1, l1 = split_name_line(rec["full_name"])
+            rec["first_name_parsed"], rec["middle_name_parsed"], rec["last_name_parsed"] = f1, m1, l1
+
+        rows.append(rec)
+        pb.progress(idx / total)
+
+    pb.empty()
+
+    if not rows:
+        st.error("No valid rows processed.")
+        st.stop()
+
+    df = pd.DataFrame(rows)
+
+    # Optional: show crop previews for first image
+    if show_preview and 'preview_crops' in locals() and preview_crops:
+        st.markdown("#### Crop previews for first file")
+        cols = st.columns(min(4, len(preview_crops)))
+        i = 0
+        for k, imgbytes in preview_crops.items():
+            with cols[i % len(cols)]:
+                st.markdown(f"**{k}**")
+                st.image(Image.open(io.BytesIO(imgbytes)), use_column_width=True)
+            i += 1
+
+    # Display & download
+    display_cols = [c for c in df.columns if not c.endswith("_conf")]
+    conf_cols = [c for c in df.columns if c.endswith("_conf")]
+    display_cols += conf_cols
+
+    st.markdown("### Extracted results — edit then download")
+    if hasattr(st, "experimental_data_editor"):
+        try:
+            edited = st.experimental_data_editor(df[display_cols], num_rows="dynamic")
+        except Exception:
+            edited = df[display_cols]
+    else:
+        edited = df[display_cols]
+
+    out_df = edited.copy() if isinstance(edited, pd.DataFrame) else df.copy()
+
+    csv_bytes = out_df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download CSV", csv_bytes, "extracted_forms.csv", "text/csv")
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        out_df.to_excel(writer, index=False, sheet_name="extracted")
+    buf.seek(0)
+    st.download_button(
+        "Download Excel",
+        buf.read(),
+        "extracted_forms.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    st.success(f"Processed {len(out_df)} files. Download available above.")
+else:
+    st.info("Upload filled form images above to begin processing.")
